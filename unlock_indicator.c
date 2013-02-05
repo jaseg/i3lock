@@ -43,11 +43,8 @@ extern uint32_t last_resolution[2];
 /* Whether the unlock indicator is enabled (defaults to true). */
 extern bool unlock_indicator;
 
-/* A Cairo surface containing the specified image (-i), if any. */
-extern cairo_surface_t *img;
-
-/* Whether the image should be tiled. */
-extern bool tile;
+/* How the image should be rendered. */
+extern drawmode_t drawmode;
 /* The background color to use (in hex). */
 extern char color[7];
 
@@ -59,6 +56,11 @@ static struct ev_timer *clear_indicator_timeout;
 
 /* Cache the screen’s visual, necessary for creating a Cairo context. */
 static xcb_visualtype_t *vistype;
+
+/* Array of cairo surfaces containing pre-rendered background images for each
+ * screen */
+cairo_surface_t **imgs;
+int num_imgs;
 
 /* Maintain the current unlock/PAM state to draw the appropriate unlock
  * indicator. */
@@ -85,30 +87,15 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
     cairo_surface_t *xcb_output = cairo_xcb_surface_create(conn, bg_pixmap, vistype, resolution[0], resolution[1]);
     cairo_t *xcb_ctx = cairo_create(xcb_output);
 
-    if (img) {
-        if (!tile) {
-            cairo_set_source_surface(xcb_ctx, img, 0, 0);
-            cairo_paint(xcb_ctx);
-        } else {
-            /* create a pattern and fill a rectangle as big as the screen */
-            cairo_pattern_t *pattern;
-            pattern = cairo_pattern_create_for_surface(img);
-            cairo_set_source(xcb_ctx, pattern);
-            cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
-            cairo_rectangle(xcb_ctx, 0, 0, resolution[0], resolution[1]);
-            cairo_fill(xcb_ctx);
-            cairo_pattern_destroy(pattern);
+    /* Iterate over all screns and draw the pre-rendered background images */
+    for (int i = 0; i < num_imgs; i++) {
+        int x = 0, y = 0;
+        if (i < xr_screens) {
+            x = xr_resolutions[i].x;
+            y = xr_resolutions[i].y;
         }
-    } else {
-        char strgroups[3][3] = {{color[0], color[1], '\0'},
-                                {color[2], color[3], '\0'},
-                                {color[4], color[5], '\0'}};
-        uint32_t rgb16[3] = {(strtol(strgroups[0], NULL, 16)),
-                             (strtol(strgroups[1], NULL, 16)),
-                             (strtol(strgroups[2], NULL, 16))};
-        cairo_set_source_rgb(xcb_ctx, rgb16[0] / 255.0, rgb16[1] / 255.0, rgb16[2] / 255.0);
-        cairo_rectangle(xcb_ctx, 0, 0, resolution[0], resolution[1]);
-        cairo_fill(xcb_ctx);
+        cairo_set_source_surface(xcb_ctx, imgs[i], x, y);
+        cairo_paint(xcb_ctx);
     }
 
     if (unlock_state >= STATE_KEY_PRESSED && unlock_indicator) {
@@ -319,5 +306,88 @@ void stop_clear_indicator_timeout(void) {
         ev_timer_stop(main_loop, clear_indicator_timeout);
         free(clear_indicator_timeout);
         clear_indicator_timeout = NULL;
+    }
+}
+
+/*
+ * Render the background image of each screen into a buffer to reduce later
+ * render latency (especially scaling takes a lot of time).  */
+void prerender_background_images(cairo_surface_t* bgimg){
+
+    /* Allocate image buffers */
+    num_imgs = xr_screens ? xr_screens : 1;
+    imgs = calloc(sizeof(cairo_surface_t*), num_imgs);
+    if (xr_screens > 0) {
+        for (int screen = 0; screen < xr_screens; screen++) {
+            imgs[screen] = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, xr_resolutions[screen].width, xr_resolutions[screen].height);
+        }
+    } else {
+        /* We have no information about the screen sizes/positions, so we just
+         * use the root window size (just like the unlock indicator) */
+        imgs[0] = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, last_resolution[0], last_resolution[1]);
+    }
+
+    /* iterate over screens */
+    for (int i = 0; i < num_imgs; i++) {
+        cairo_t *img_ctx = cairo_create(imgs[i]);
+        int w = cairo_image_surface_get_width(imgs[i]);
+        int h = cairo_image_surface_get_height(imgs[i]);
+
+        /* draw solid color -- theoretically this could be optimized away in case
+         * drawmode is either DRAWMODE_TILE or DRAWMODE_ZOOM. */
+        char strgroups[3][3] = {{color[0], color[1], '\0'},
+                                {color[2], color[3], '\0'},
+                                {color[4], color[5], '\0'}};
+        uint32_t rgb16[3] = {(strtol(strgroups[0], NULL, 16)),
+                             (strtol(strgroups[1], NULL, 16)),
+                             (strtol(strgroups[2], NULL, 16))};
+        cairo_set_source_rgb(img_ctx, rgb16[0] / 255.0, rgb16[1] / 255.0, rgb16[2] / 255.0);
+        cairo_rectangle(img_ctx, 0, 0, w, h);
+        cairo_fill(img_ctx);
+
+        if (bgimg) {
+            int bg_w = cairo_image_surface_get_width(bgimg);
+            int bg_h = cairo_image_surface_get_height(bgimg);
+
+            if(drawmode == DRAWMODE_CENTER){
+                int x = ((w / 2) - (bg_w / 2));
+                int y = ((h / 2) - (bg_h / 2));
+                cairo_set_source_surface(img_ctx, bgimg, x, y);
+                cairo_paint(img_ctx);
+
+            } else if(drawmode == DRAWMODE_TILE){
+                /* create a pattern and fill a rectangle as big as the screen */
+                cairo_pattern_t *pattern;
+                pattern = cairo_pattern_create_for_surface(bgimg);
+                cairo_set_source(img_ctx, pattern);
+                cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
+                cairo_rectangle(img_ctx, 0, 0, w, h);
+                cairo_fill(img_ctx);
+                cairo_pattern_destroy(pattern);
+
+            }else if(drawmode == DRAWMODE_ZOOM || drawmode == DRAWMODE_FIT){
+                /* In case anything happens with the surface beyond drawing the
+                 * image below, the current transformation matrix needs to be
+                 * saved here before being overwritten. */
+
+                /* Position the image on the top left corner of the image,
+                 * scale to fit the screen */
+                double sx = (double)w / (double)bg_w;
+                double sy = (double)h / (double)bg_h;
+                double s = (drawmode == DRAWMODE_ZOOM) ? fmax(sx, sy) : fmin(sx, sy);
+                /* shift the point of origin to the middle of the screen */
+                cairo_translate(img_ctx, w/2, h/2);
+                /* apply the scale transformation */
+                cairo_scale(img_ctx, s, s);
+                /* translate the image center to the point of origin (which
+                 * now is in the middle of the screen) */
+                cairo_translate(img_ctx, -(bg_w / 2), -(bg_h / 2));
+                /* draw the image */
+                cairo_set_source_surface(img_ctx, bgimg, 0, 0);
+                cairo_paint(img_ctx);
+            }
+        }
+
+        cairo_destroy(img_ctx);
     }
 }

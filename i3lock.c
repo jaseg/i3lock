@@ -58,8 +58,7 @@ static struct xkb_state *xkb_state;
 static struct xkb_context *xkb_context;
 static struct xkb_keymap *xkb_keymap;
 
-cairo_surface_t *img = NULL;
-bool tile = false;
+drawmode_t drawmode = DRAWMODE_CENTER;
 
 /* isutf, u8_dec © 2005 Jeff Bezanson, public domain */
 #define isutf(c) (((c) & 0xC0) != 0x80)
@@ -514,13 +513,15 @@ int main(int argc, char *argv[]) {
         {"no-unlock-indicator", no_argument, NULL, 'u'},
         {"image", required_argument, NULL, 'i'},
         {"tiling", no_argument, NULL, 't'},
+        {"zoom", no_argument, NULL, 'z'},
+        {"fit", no_argument, NULL, 'f'},
         {NULL, no_argument, NULL, 0}
     };
 
     if ((username = getenv("USER")) == NULL)
         errx(1, "USER environment variable not set, please set it.\n");
 
-    while ((o = getopt_long(argc, argv, "hvnbdc:p:ui:t", longopts, &optind)) != -1) {
+    while ((o = getopt_long(argc, argv, "hvnbdc:p:ui:tzf", longopts, &optind)) != -1) {
         switch (o) {
         case 'v':
             errx(EXIT_SUCCESS, "version " VERSION " © 2010-2012 Michael Stapelberg");
@@ -552,7 +553,13 @@ int main(int argc, char *argv[]) {
             image_path = strdup(optarg);
             break;
         case 't':
-            tile = true;
+            drawmode = DRAWMODE_TILE;
+            break;
+        case 'z':
+            drawmode = DRAWMODE_ZOOM;
+            break;
+        case 'f':
+            drawmode = DRAWMODE_FIT;
             break;
         case 'p':
             if (!strcmp(optarg, "win")) {
@@ -569,7 +576,7 @@ int main(int argc, char *argv[]) {
             break;
         default:
             errx(1, "Syntax: i3lock [-v] [-n] [-b] [-d] [-c color] [-u] [-p win|default]"
-            " [-i image.png] [-t]"
+            " [-i image.png] [-t|-z|-f]"
             );
         }
     }
@@ -633,6 +640,7 @@ int main(int argc, char *argv[]) {
     xcb_change_window_attributes(conn, screen->root, XCB_CW_EVENT_MASK,
             (uint32_t[]){ XCB_EVENT_MASK_STRUCTURE_NOTIFY });
 
+    cairo_surface_t *img = NULL;
     if (image_path) {
         /* Create a pixmap to render on, fill it with the background color */
         img = cairo_image_surface_create_from_png(image_path);
@@ -643,6 +651,8 @@ int main(int argc, char *argv[]) {
             img = NULL;
         }
     }
+    prerender_background_images(img);
+    cairo_surface_destroy(img);
 
     /* Pixmap on which the image is rendered to (if any) */
     xcb_pixmap_t bg_pixmap = draw_image(last_resolution);
