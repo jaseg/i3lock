@@ -39,3 +39,5 @@ press enter.
 Upstream
 --------
 This is my fork of i3lock, the main repo is at https://github.com/jaseg/i3lock
+The difference to the "official" i3lock is that this one handles background
+image scaling and centering on multiple monitors in a sane way.
