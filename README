@@ -17,6 +17,9 @@ Many little improvements have been made to i3lock over time:
 
 - i3lock uses PAM and therefore is compatible with LDAP etc.
 
+- You can specify whether the background image should be tiled, centered per
+  screen, scaled to fill each screen or scaled to fit each screen.
+
 Requirements
 ------------
 - pkg-config
