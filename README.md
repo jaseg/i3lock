@@ -1,3 +1,12 @@
+DO NOT USE!
+===========
+
+Since working on this project, I have come to the conclusion that using anything but xscreensaver is a very unwise decision ([details](http://www.jwz.org/xscreensaver/toolkits.html)). I am no longer updating this project and strongly advise against its use (or the use of the upstream branch). If you want nice scaled lockscreen images, just use xscreensaver with xv, feh or any other program capable of displaying images on an X11 root window.
+
+Thanks for checking out anyway!
+
+jaseg
+
 i3lock - improved screen locker
 ===============================
 i3lock is a simple screen locker like slock. After starting it, you will
